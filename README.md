@@ -4,6 +4,7 @@
 [![Validate](https://github.com/viss/ha-ac-infinity-ble/actions/workflows/validate.yml/badge.svg)](https://github.com/viss/ha-ac-infinity-ble/actions/workflows/validate.yml)
 
 === /!\ warning /!\ ===
+
 I got sick of not being able to control my huge 8" inline duct fan via HA - the old, now abandoned bluetooth repo worked for a bit, then aci changed stuff and it broke again. I was granted access to daybreak and since its positioned as a 'blueteam llm' I figured - what the hell, lets reverse some android apps and see what happens! My first go at it was this - lets reverse the ac infinity android app, tear out all the bluetooth comms protocol data, and see if we can monkey island style rub that all over the old borked HA integration and see if we can tune it up. 
 
 well.. it worked. It took 2 days, and 8 versions, and there was a lot of me putting a brick in a gym sock and bashing daybreak in the face with it til it got stuff right, but the result is a functional HA integration that I am now using! My controller is a 'controller 69 with bluetooth', so anyone else with that controller should be able to take advantage of this. I havent tried plugging other stuff in (i have a humidifier too and some lights), but it seems like a good start
