@@ -1,0 +1,21 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Select AC Infinity controller",
+        "description": "Close the AC Infinity phone app before connecting. The controller accepts only one Bluetooth client.",
+        "data": {
+          "address": "Controller"
+        }
+      }
+    },
+    "error": {
+      "device_disappeared": "The controller is no longer visible. Close the phone app and try again."
+    },
+    "abort": {
+      "already_configured": "This controller is already configured.",
+      "no_devices_found": "No AC Infinity Bluetooth controller was found during the 12-second scan. Force-close the phone app, verify the controller appears under Settings > Bluetooth > Advertisements, and try again.",
+      "not_supported": "The discovered advertisement is not a supported AC Infinity controller."
+    }
+  }
+}

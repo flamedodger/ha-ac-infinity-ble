@@ -1,0 +1,26 @@
+{
+  "version": "2.0.0",
+  "domain": "ac_infinity",
+  "name": "AC Infinity",
+  "bluetooth": [
+    {
+      "connectable": true,
+      "manufacturer_id": 2306
+    },
+    {
+      "connectable": true,
+      "local_name": "ACI-E"
+    }
+  ],
+  "config_flow": true,
+  "codeowners": [
+    "@viss"
+  ],
+  "dependencies": [
+    "bluetooth_adapters"
+  ],
+  "documentation": "https://github.com/viss/ha-ac-infinity-ble",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/viss/ha-ac-infinity-ble/issues",
+  "requirements": []
+}
