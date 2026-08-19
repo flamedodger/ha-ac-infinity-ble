@@ -149,8 +149,10 @@ that Home Assistant's Bluetooth integration can see connectable devices.
   but final validation must run inside the user's Home Assistant Bluetooth
   environment.
 
-The original integration and BLE library are MIT licensed by their respective
-authors; see `LICENSE`.
+New work and modifications in this repository are copyright Viss and released
+under the root MIT license. Required notices for inherited upstream portions
+are scoped separately in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md);
+those notices do not claim authorship of this project's new work.
 
 AC Infinity product names and trademarks belong to their respective owners.
 This project is not affiliated with or endorsed by AC Infinity.
