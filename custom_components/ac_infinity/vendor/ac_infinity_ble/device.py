@@ -26,7 +26,7 @@ from .const import (
 )
 from .exceptions import CharacteristicMissingError
 from .models import DeviceInfo
-from .protocol import Protocol, parse_manufacturer_data
+from .protocol import CONTROLLER_67_TYPE, Protocol, parse_manufacturer_data
 from .util import get_bit, get_bits, get_short
 
 BLEAK_BACKOFF_TIME = 0.25
@@ -164,8 +164,15 @@ class ACInfinityController:
         sequence = self.sequence
         command = self._protocol.get_model_data(self._state.type, 0, sequence)
         if data := await self._send_command(command):
-            values = self._protocol.parse_model_response(data, sequence)
-            self._state.work_type = values[0x10][0]
+            values = self._protocol.parse_model_response(
+                data, sequence, self._state.type
+            )
+            if 0x10 in values:
+                self._state.work_type = values[0x10][0]
+            elif self._state.work_type is None:
+                # Controller 67 reports live output in its manufacturer data,
+                # but its legacy model response has no mode parameter.
+                self._state.work_type = 2 if self._state.fan else 1
             self._state.level_off = values[0x11][0] & 0x0F
             self._state.level_on = values[0x12][0] & 0x0F
             self._state.fan = (
@@ -194,7 +201,7 @@ class ACInfinityController:
         )
         try:
             response = await self._send_command(command)
-            self._protocol.parse_set_response(response, sequence)
+            self._protocol.parse_set_response(response, sequence, self._state.type)
         except Exception:
             self._state = previous_state
             self._desired_work_type = None
@@ -210,10 +217,17 @@ class ACInfinityController:
         self._state.work_type = 1
         self._state.fan = 0
         sequence = self.sequence
-        command = self._protocol.set_mode(self._state.type, 1, 0, sequence)
+        if self._state.type == CONTROLLER_67_TYPE:
+            # Controller 67 requires the legacy mode-plus-level form. Keep
+            # Controller 69 on the mode-only packet that preserves its preset.
+            command = self._protocol.set_level(
+                self._state.type, 1, self._state.level_off or 0, 0, sequence
+            )
+        else:
+            command = self._protocol.set_mode(self._state.type, 1, 0, sequence)
         try:
             response = await self._send_command(command)
-            self._protocol.parse_set_response(response, sequence)
+            self._protocol.parse_set_response(response, sequence, self._state.type)
         except Exception:
             self._state = previous_state
             self._desired_work_type = None
@@ -232,7 +246,15 @@ class ACInfinityController:
         self.state.fan = speed
         if self._state.work_type == 1:
             sequence = self.sequence
-            command = self._protocol.set_mode(self._state.type, 1, 0, sequence)
+            if self._state.type == CONTROLLER_67_TYPE:
+                self._state.level_off = speed
+                command = self._protocol.set_level(
+                    self._state.type, 1, speed, 0, sequence
+                )
+            else:
+                command = self._protocol.set_mode(
+                    self._state.type, 1, 0, sequence
+                )
         else:
             self._state.level_on = speed
             sequence = self.sequence
@@ -241,7 +263,7 @@ class ACInfinityController:
             )
         try:
             response = await self._send_command(command)
-            self._protocol.parse_set_response(response, sequence)
+            self._protocol.parse_set_response(response, sequence, self._state.type)
         except Exception:
             self._state = previous_state
             self._desired_work_type = None
@@ -392,7 +414,10 @@ class ACInfinityController:
         if self._notify_future and not self._notify_future.done():
             try:
                 self._protocol.parse_response(
-                    data, self._pending_sequence, self._pending_command
+                    data,
+                    self._pending_sequence,
+                    self._pending_command,
+                    self._protocol.response_marker(self._state.type),
                 )
             except ValueError:
                 _LOGGER.debug("%s: Ignoring unrelated notification", self.name)

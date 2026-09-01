@@ -1,6 +1,10 @@
 from .models import DeviceInfo
 from .util import crc16, get_bit, get_bits, get_short
 
+CONTROLLER_67_TYPE = 1
+CONTROLLER_67_RESPONSE_MARKER = 0x10
+CONTROLLER_69_RESPONSE_MARKER = 0x13
+
 
 def get_type(type: int) -> str:
     if type == 2:
@@ -104,10 +108,11 @@ class Protocol:
         data: bytes | bytearray,
         expected_sequence: int | None = None,
         expected_command: int | None = None,
+        expected_marker: int = CONTROLLER_69_RESPONSE_MARKER,
     ) -> bytes:
         """Validate a response frame and return its payload."""
         packet = bytes(data)
-        if len(packet) < 12 or packet[0:2] != bytes((0xA5, 0x13)):
+        if len(packet) < 12 or packet[0:2] != bytes((0xA5, expected_marker)):
             raise ValueError("not an AC Infinity response frame")
         payload_length = int.from_bytes(packet[2:4], "big")
         if len(packet) != payload_length + 12:
@@ -124,10 +129,15 @@ class Protocol:
         return packet[10:-2]
 
     def parse_model_response(
-        self, data: bytes | bytearray, expected_sequence: int | None = None
+        self,
+        data: bytes | bytearray,
+        expected_sequence: int | None = None,
+        controller_type: int | None = None,
     ) -> dict[int, bytes]:
         """Parse parameter TLVs from a validated model response."""
-        payload = self.parse_response(data, expected_sequence, 1)
+        payload = self.parse_response(
+            data, expected_sequence, 1, self.response_marker(controller_type)
+        )
         values: dict[int, bytes] = {}
         offset = 0
         while offset + 2 <= len(payload):
@@ -140,15 +150,25 @@ class Protocol:
             offset = end
             if parameter == 0xFF:
                 break
-        if any(not values.get(parameter) for parameter in (0x10, 0x11, 0x12)):
+        required_parameters = (
+            (0x11, 0x12)
+            if controller_type == CONTROLLER_67_TYPE
+            else (0x10, 0x11, 0x12)
+        )
+        if any(not values.get(parameter) for parameter in required_parameters):
             raise ValueError("model response is missing mode or level parameters")
         return values
 
     def parse_set_response(
-        self, data: bytes | bytearray, expected_sequence: int
+        self,
+        data: bytes | bytearray,
+        expected_sequence: int,
+        controller_type: int | None = None,
     ) -> None:
         """Validate that every parameter in a SET acknowledgement succeeded."""
-        payload = self.parse_response(data, expected_sequence, 3)
+        payload = self.parse_response(
+            data, expected_sequence, 3, self.response_marker(controller_type)
+        )
         if not payload or len(payload) % 2:
             raise ValueError("malformed AC Infinity SET acknowledgement")
         failures = [
@@ -160,10 +180,24 @@ class Protocol:
             raise ValueError(f"AC Infinity rejected SET parameters: {failures}")
 
     def get_model_data(self, type: int, b: int, sequence: int) -> bytes:
-        command = [16, 17, 18, 19, 20, 21, 22, 23]
+        # Controller 67 (advertisement type 1/version 0) uses the older
+        # parameter set captured from the vendor app. It does not answer the
+        # Controller 69 query that begins with parameter 0x10.
+        command = (
+            [0x11, 0x12, 0x15, 0x18]
+            if type == CONTROLLER_67_TYPE
+            else [16, 17, 18, 19, 20, 21, 22, 23]
+        )
         if type in [7, 9, 11, 12]:
             command += [255, b]
         return self._add_head(command, 1, sequence)
+
+    @staticmethod
+    def response_marker(controller_type: int | None) -> int:
+        """Return the response-frame marker used by a controller family."""
+        if controller_type == CONTROLLER_67_TYPE:
+            return CONTROLLER_67_RESPONSE_MARKER
+        return CONTROLLER_69_RESPONSE_MARKER
 
     def set_level(
         self, type: int, work_type: int, level: int, b: int, sequence: int
