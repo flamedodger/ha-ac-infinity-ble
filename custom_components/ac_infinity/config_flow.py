@@ -18,7 +18,7 @@ from homeassistant.const import CONF_ADDRESS, CONF_SERVICE_DATA
 from homeassistant.data_entry_flow import FlowResult
 
 from .const import DOMAIN
-from .discovery import NAME_ONLY_CONTROLLER_69, device_from_service_info
+from .discovery import device_from_service_info
 
 
 DISCOVERY_TIMEOUT = 12
@@ -86,10 +86,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     lambda service_info: (
                         device_from_service_info(service_info) is not None
                     ),
-                    {
-                        "local_name": NAME_ONLY_CONTROLLER_69,
-                        "connectable": True,
-                    },
+                    {"connectable": True},
                     BluetoothScanningMode.ACTIVE,
                     DISCOVERY_TIMEOUT,
                 )
