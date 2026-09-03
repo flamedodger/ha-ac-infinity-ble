@@ -87,6 +87,45 @@ The integration intentionally holds the BLE connection for responsive
 automations and live telemetry. Reload or disable the integration before using
 the phone app.
 
+## Adaptive speed control (development preview)
+
+Version 2.1 adds an opt-in adaptive controller and a bundled Lovelace card.
+Adaptive control is **off by default** after installation or upgrade. Existing
+fan and sensor entities continue to use the same BLE command path.
+
+The integration creates native Home Assistant entities for:
+
+- adaptive enable and manual override;
+- day and night temperature, humidity, and leaf-VPD targets;
+- fan limits, manual level, hysteresis, command interval, and minimum runtime;
+- requested/current fan level, control reason, active period, calculated leaf
+  VPD, and climate-sensor health; and
+- lights-on and lights-off schedule times.
+
+The controller uses its own temperature and humidity readings. High
+temperature, high humidity, and low leaf VPD can increase the requested fan
+level; the largest demand wins. Commands move one physical level at a time and
+respect the configured command interval. Invalid or stale climate data holds
+the current level instead of issuing a new command.
+
+Add the bundled card to a dashboard using the fan entity created by this
+integration:
+
+```yaml
+type: custom:ac-infinity-adaptive-card
+fan_entity: fan.your_controller_fan
+name: AC Infinity Adaptive Speed Control
+```
+
+The card is served and registered by the integration and discovers the
+adaptive entities belonging to the same Home Assistant device. A copy of the
+configuration is available in `dashboards/adaptive-card.yaml`.
+
+Before enabling adaptive control, set the light schedule, crop targets, and
+minimum/maximum fan levels. Confirm direct fan control still works, then enable
+the adaptive switch while watching the requested-level and reason sensors. Do
+not enable it while another automation is controlling the same fan.
+
 ## Automation examples
 
 Turn the fan on at level 5 (50 percent):

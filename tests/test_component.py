@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-from pathlib import Path
 import sys
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock
-
 
 COMPONENT = Path(__file__).parents[1] / "custom_components" / "ac_infinity"
 
@@ -23,9 +22,8 @@ sys.modules.setdefault("custom_components", custom_components)
 sys.modules.setdefault("custom_components.ac_infinity", ac_infinity)
 
 discovery = importlib.import_module("custom_components.ac_infinity.discovery")
-ble = importlib.import_module(
-    "custom_components.ac_infinity.vendor.ac_infinity_ble"
-)
+adaptive = importlib.import_module("custom_components.ac_infinity.adaptive")
+ble = importlib.import_module("custom_components.ac_infinity.vendor.ac_infinity_ble")
 device_module = importlib.import_module(
     "custom_components.ac_infinity.vendor.ac_infinity_ble.device"
 )
@@ -50,6 +48,61 @@ LIVE_MODEL_RESPONSE = bytes.fromhex(
     "a51300301a6663cc0001100101110105120105130700c25a200064001404"
     "0000000015040000000016080000000000000000170400000000ff00c513"
 )
+
+
+class AdaptiveControlTests(unittest.TestCase):
+    def test_daytime_handles_overnight_light_period(self) -> None:
+        self.assertTrue(
+            adaptive.is_daytime(
+                adaptive.parse_time("18:00:00"),
+                adaptive.parse_time("18:00:00"),
+                adaptive.parse_time("06:00:00"),
+            )
+        )
+        self.assertFalse(
+            adaptive.is_daytime(
+                adaptive.parse_time("12:00:00"),
+                adaptive.parse_time("18:00:00"),
+                adaptive.parse_time("06:00:00"),
+            )
+        )
+
+    def test_disabled_sensor_input_holds_current_level(self) -> None:
+        result = adaptive.calculate(
+            temperature=None,
+            humidity=60,
+            current_level=4,
+            daytime=True,
+            options=adaptive.DEFAULTS,
+            sensors_healthy=False,
+        )
+        self.assertEqual(result.requested_level, 4)
+        self.assertEqual(result.reason, "sensor safety hold")
+
+    def test_high_temperature_increases_requested_level(self) -> None:
+        result = adaptive.calculate(
+            temperature=31,
+            humidity=50,
+            current_level=1,
+            daytime=True,
+            options=adaptive.DEFAULTS,
+            sensors_healthy=True,
+        )
+        self.assertEqual(result.requested_level, 4)
+        self.assertEqual(result.reason, "high temperature")
+
+    def test_manual_override_uses_selected_level(self) -> None:
+        options = {**adaptive.DEFAULTS, "manual_override": True, "manual_fan_level": 7}
+        result = adaptive.calculate(
+            temperature=25,
+            humidity=50,
+            current_level=1,
+            daytime=True,
+            options=options,
+            sensors_healthy=True,
+        )
+        self.assertEqual(result.requested_level, 7)
+        self.assertEqual(result.reason, "manual override")
 
 
 def service_info(manufacturer_data: dict[int, bytes]) -> types.SimpleNamespace:
