@@ -48,6 +48,10 @@ LIVE_MODEL_RESPONSE = bytes.fromhex(
     "a51300301a6663cc0001100101110105120105130700c25a200064001404"
     "0000000015040000000016080000000000000000170400000000ff00c513"
 )
+CONTROLLER_67_MODEL_RESPONSE = bytes.fromhex(
+    "a510002e000215e6000110010311010112010a13070f521c48163e2d1404"
+    "0000070815040000070816080000070800000708170409000f003665"
+)
 
 
 class AdaptiveControlTests(unittest.TestCase):
@@ -165,6 +169,12 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(values[0x10], b"\x01")
         self.assertEqual(values[0x11], b"\x05")
         self.assertEqual(values[0x12], b"\x05")
+
+    def test_controller_67_response_header_is_accepted(self) -> None:
+        values = Protocol().parse_model_response(CONTROLLER_67_MODEL_RESPONSE, 2)
+        self.assertEqual(values[0x10], b"\x03")
+        self.assertEqual(values[0x11], b"\x01")
+        self.assertEqual(values[0x12], b"\x0a")
 
     def test_set_acknowledgement_is_validated(self) -> None:
         Protocol().parse_set_response(LIVE_ACK, 0x7695)
