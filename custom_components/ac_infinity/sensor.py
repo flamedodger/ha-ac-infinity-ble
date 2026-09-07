@@ -15,6 +15,7 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .adaptive_entity import AdaptiveEntity
 from .const import DEVICE_MODEL, DOMAIN
 from .coordinator import ACInfinityDataUpdateCoordinator
 from .models import ACInfinityData
@@ -34,6 +35,25 @@ async def async_setup_entry(
     ]
     if data.device.state.version >= 3 and data.device.state.type in (7, 9, 11, 12):
         entities.append(VpdSensor(data.coordinator, data.device))
+    entities.extend(
+        [
+            AdaptiveDiagnosticSensor(
+                data.adaptive, "leaf_vpd", "Adaptive leaf VPD", UnitOfPressure.KPA
+            ),
+            AdaptiveDiagnosticSensor(
+                data.adaptive, "current_level", "Adaptive current fan level"
+            ),
+            AdaptiveDiagnosticSensor(
+                data.adaptive, "requested_level", "Adaptive requested fan level"
+            ),
+            AdaptiveDiagnosticSensor(
+                data.adaptive, "reason", "Adaptive control reason"
+            ),
+            AdaptiveDiagnosticSensor(
+                data.adaptive, "active_period", "Adaptive active period"
+            ),
+        ]
+    )
     async_add_entities(entities)
 
 
@@ -127,3 +147,30 @@ class VpdSensor(ACInfinitySensor):
     @callback
     def _async_update_attrs(self) -> None:
         self._attr_native_value = self._device.vpd
+
+
+class AdaptiveDiagnosticSensor(AdaptiveEntity, SensorEntity):
+    """Expose calculated adaptive state for dashboards and diagnostics."""
+
+    def __init__(self, adaptive, key: str, name: str, unit=None) -> None:
+        super().__init__(adaptive, key)
+        self._key = key
+        self._attr_name = name
+        self._attr_native_unit_of_measurement = unit
+        if key == "leaf_vpd":
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def native_value(self):
+        if self._key == "leaf_vpd":
+            value = self.adaptive.result.leaf_vpd
+            return round(value, 3) if value is not None else None
+        if self._key == "current_level":
+            return self.adaptive.current_level
+        if self._key == "requested_level":
+            return self.adaptive.result.requested_level
+        if self._key == "reason":
+            return self.adaptive.result.reason
+        if self._key == "active_period":
+            return "day" if self.adaptive.daytime else "night"
+        return None

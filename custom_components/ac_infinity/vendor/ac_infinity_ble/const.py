@@ -18,3 +18,4 @@ class CallbackType(Enum):
     ADVERTISEMENT = 1
     NOTIFICATION = 2
     UPDATE_RESPONSE = 3
+    TELEMETRY_STALE = 4

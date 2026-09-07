@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-from pathlib import Path
 import sys
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock
-
 
 COMPONENT = Path(__file__).parents[1] / "custom_components" / "ac_infinity"
 
@@ -23,9 +22,8 @@ sys.modules.setdefault("custom_components", custom_components)
 sys.modules.setdefault("custom_components.ac_infinity", ac_infinity)
 
 discovery = importlib.import_module("custom_components.ac_infinity.discovery")
-ble = importlib.import_module(
-    "custom_components.ac_infinity.vendor.ac_infinity_ble"
-)
+adaptive = importlib.import_module("custom_components.ac_infinity.adaptive")
+ble = importlib.import_module("custom_components.ac_infinity.vendor.ac_infinity_ble")
 device_module = importlib.import_module(
     "custom_components.ac_infinity.vendor.ac_infinity_ble.device"
 )
@@ -50,6 +48,65 @@ LIVE_MODEL_RESPONSE = bytes.fromhex(
     "a51300301a6663cc0001100101110105120105130700c25a200064001404"
     "0000000015040000000016080000000000000000170400000000ff00c513"
 )
+CONTROLLER_67_MODEL_RESPONSE = bytes.fromhex(
+    "a510002e000215e6000110010311010112010a13070f521c48163e2d1404"
+    "0000070815040000070816080000070800000708170409000f003665"
+)
+
+
+class AdaptiveControlTests(unittest.TestCase):
+    def test_daytime_handles_overnight_light_period(self) -> None:
+        self.assertTrue(
+            adaptive.is_daytime(
+                adaptive.parse_time("18:00:00"),
+                adaptive.parse_time("18:00:00"),
+                adaptive.parse_time("06:00:00"),
+            )
+        )
+        self.assertFalse(
+            adaptive.is_daytime(
+                adaptive.parse_time("12:00:00"),
+                adaptive.parse_time("18:00:00"),
+                adaptive.parse_time("06:00:00"),
+            )
+        )
+
+    def test_disabled_sensor_input_holds_current_level(self) -> None:
+        result = adaptive.calculate(
+            temperature=None,
+            humidity=60,
+            current_level=4,
+            daytime=True,
+            options=adaptive.DEFAULTS,
+            sensors_healthy=False,
+        )
+        self.assertEqual(result.requested_level, 4)
+        self.assertEqual(result.reason, "sensor safety hold")
+
+    def test_high_temperature_increases_requested_level(self) -> None:
+        result = adaptive.calculate(
+            temperature=31,
+            humidity=50,
+            current_level=1,
+            daytime=True,
+            options=adaptive.DEFAULTS,
+            sensors_healthy=True,
+        )
+        self.assertEqual(result.requested_level, 4)
+        self.assertEqual(result.reason, "high temperature")
+
+    def test_manual_override_uses_selected_level(self) -> None:
+        options = {**adaptive.DEFAULTS, "manual_override": True, "manual_fan_level": 7}
+        result = adaptive.calculate(
+            temperature=25,
+            humidity=50,
+            current_level=1,
+            daytime=True,
+            options=options,
+            sensors_healthy=True,
+        )
+        self.assertEqual(result.requested_level, 7)
+        self.assertEqual(result.reason, "manual override")
 
 
 def service_info(manufacturer_data: dict[int, bytes]) -> types.SimpleNamespace:
@@ -107,11 +164,74 @@ class DiscoveryTests(unittest.TestCase):
 
 
 class ProtocolTests(unittest.TestCase):
+    @staticmethod
+    def _prepare_telemetry_tracking(controller, now: float = 100.0) -> None:
+        controller.loop = types.SimpleNamespace(time=lambda: now)
+        controller._telemetry_event = asyncio.Event()
+        controller._telemetry_generation = 0
+        controller._last_telemetry_monotonic = None
+        controller._connection_started_monotonic = now
+
+    def test_cached_config_state_is_not_live_climate(self) -> None:
+        async def exercise() -> None:
+            controller = ble.ACInfinityController(
+                types.SimpleNamespace(address="AA:BB:CC:DD:EE:FF"),
+                state=ble.DeviceInfo(
+                    type=1,
+                    name="A-test",
+                    version=3,
+                    tmp=26.6,
+                    hum=55.1,
+                    vpd=1.05,
+                ),
+            )
+
+            self.assertIsNone(controller.temperature)
+            self.assertIsNone(controller.humidity)
+            self.assertIsNone(controller.vpd)
+            self.assertEqual(controller.telemetry_generation, 0)
+
+        asyncio.run(exercise())
+
+    def test_only_real_telemetry_advances_climate_generation(self) -> None:
+        controller = object.__new__(ble.ACInfinityController)
+        controller._state = ble.DeviceInfo(type=7, name="E-test", version=3)
+        controller._protocol = Protocol()
+        controller._callbacks = []
+        controller._desired_work_type = None
+        controller._notify_future = None
+        controller._pending_sequence = None
+        controller._pending_command = None
+        self._prepare_telemetry_tracking(controller)
+
+        controller._fire_callbacks(ble.CallbackType.UPDATE_RESPONSE)
+        self.assertEqual(controller.telemetry_generation, 0)
+
+        controller._notification_handler(0, LIVE_TELEMETRY_ON)
+        self.assertEqual(controller.telemetry_generation, 1)
+        self.assertEqual(controller.temperature, 23.98)
+        self.assertEqual(controller.humidity, 67.33)
+        self.assertEqual(controller.vpd, 0.92)
+
+    def test_stale_detection_uses_real_telemetry_age(self) -> None:
+        controller = object.__new__(ble.ACInfinityController)
+        self._prepare_telemetry_tracking(controller, now=200.0)
+        controller._last_telemetry_monotonic = 150.0
+
+        self.assertFalse(controller.telemetry_is_stale(60))
+        self.assertTrue(controller.telemetry_is_stale(30))
+
     def test_model_response_and_off_state(self) -> None:
         values = Protocol().parse_model_response(LIVE_MODEL_RESPONSE, 0x1A66)
         self.assertEqual(values[0x10], b"\x01")
         self.assertEqual(values[0x11], b"\x05")
         self.assertEqual(values[0x12], b"\x05")
+
+    def test_controller_67_response_header_is_accepted(self) -> None:
+        values = Protocol().parse_model_response(CONTROLLER_67_MODEL_RESPONSE, 2)
+        self.assertEqual(values[0x10], b"\x03")
+        self.assertEqual(values[0x11], b"\x01")
+        self.assertEqual(values[0x12], b"\x0a")
 
     def test_set_acknowledgement_is_validated(self) -> None:
         Protocol().parse_set_response(LIVE_ACK, 0x7695)
@@ -135,6 +255,7 @@ class ProtocolTests(unittest.TestCase):
             controller._notify_future = asyncio.get_running_loop().create_future()
             controller._pending_sequence = 0x7695
             controller._pending_command = 3
+            self._prepare_telemetry_tracking(controller)
 
             controller._notification_handler(0, LIVE_TELEMETRY_ON)
             self.assertFalse(controller._notify_future.done())
@@ -154,6 +275,7 @@ class ProtocolTests(unittest.TestCase):
         controller._notify_future = None
         controller._pending_sequence = None
         controller._pending_command = None
+        self._prepare_telemetry_tracking(controller)
 
         controller._notification_handler(0, LIVE_TELEMETRY_OFF)
         self.assertEqual(controller.state.work_type, 2)
@@ -203,6 +325,9 @@ class ProtocolTests(unittest.TestCase):
             controller._client = object()
             controller._read_char = object()
             controller._write_char = object()
+            controller._connection_started_monotonic = 100.0
+            controller._last_telemetry_monotonic = 50.0
+            controller._telemetry_event = asyncio.Event()
 
             controller.abandon()
 

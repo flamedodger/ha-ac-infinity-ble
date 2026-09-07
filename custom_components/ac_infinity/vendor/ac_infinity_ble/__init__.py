@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-__version__ = "0.5.0-local"
+__version__ = "0.5.1-local"
 
 
 from .const import CallbackType
