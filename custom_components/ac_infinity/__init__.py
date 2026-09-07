@@ -14,6 +14,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS, CONF_SERVICE_DATA, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers import config_validation as cv
 
 from .adaptive_control import AdaptiveController
 from .const import DOMAIN
@@ -34,6 +35,7 @@ SETUP_TIMEOUT = 55
 STALE_CONNECTION_TIMEOUT = 10
 CARD_URL = "/ac-infinity/ac-infinity-adaptive-card.js"
 CARD_PATH = Path(__file__).parent / "frontend" / "ac-infinity-adaptive-card.js"
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 async def async_setup(hass: HomeAssistant, _config: dict) -> bool:
