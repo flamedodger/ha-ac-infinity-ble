@@ -164,6 +164,63 @@ class DiscoveryTests(unittest.TestCase):
 
 
 class ProtocolTests(unittest.TestCase):
+    @staticmethod
+    def _prepare_telemetry_tracking(controller, now: float = 100.0) -> None:
+        controller.loop = types.SimpleNamespace(time=lambda: now)
+        controller._telemetry_event = asyncio.Event()
+        controller._telemetry_generation = 0
+        controller._last_telemetry_monotonic = None
+        controller._connection_started_monotonic = now
+
+    def test_cached_config_state_is_not_live_climate(self) -> None:
+        async def exercise() -> None:
+            controller = ble.ACInfinityController(
+                types.SimpleNamespace(address="AA:BB:CC:DD:EE:FF"),
+                state=ble.DeviceInfo(
+                    type=1,
+                    name="A-test",
+                    version=3,
+                    tmp=26.6,
+                    hum=55.1,
+                    vpd=1.05,
+                ),
+            )
+
+            self.assertIsNone(controller.temperature)
+            self.assertIsNone(controller.humidity)
+            self.assertIsNone(controller.vpd)
+            self.assertEqual(controller.telemetry_generation, 0)
+
+        asyncio.run(exercise())
+
+    def test_only_real_telemetry_advances_climate_generation(self) -> None:
+        controller = object.__new__(ble.ACInfinityController)
+        controller._state = ble.DeviceInfo(type=7, name="E-test", version=3)
+        controller._protocol = Protocol()
+        controller._callbacks = []
+        controller._desired_work_type = None
+        controller._notify_future = None
+        controller._pending_sequence = None
+        controller._pending_command = None
+        self._prepare_telemetry_tracking(controller)
+
+        controller._fire_callbacks(ble.CallbackType.UPDATE_RESPONSE)
+        self.assertEqual(controller.telemetry_generation, 0)
+
+        controller._notification_handler(0, LIVE_TELEMETRY_ON)
+        self.assertEqual(controller.telemetry_generation, 1)
+        self.assertEqual(controller.temperature, 23.98)
+        self.assertEqual(controller.humidity, 67.33)
+        self.assertEqual(controller.vpd, 0.92)
+
+    def test_stale_detection_uses_real_telemetry_age(self) -> None:
+        controller = object.__new__(ble.ACInfinityController)
+        self._prepare_telemetry_tracking(controller, now=200.0)
+        controller._last_telemetry_monotonic = 150.0
+
+        self.assertFalse(controller.telemetry_is_stale(60))
+        self.assertTrue(controller.telemetry_is_stale(30))
+
     def test_model_response_and_off_state(self) -> None:
         values = Protocol().parse_model_response(LIVE_MODEL_RESPONSE, 0x1A66)
         self.assertEqual(values[0x10], b"\x01")
@@ -198,6 +255,7 @@ class ProtocolTests(unittest.TestCase):
             controller._notify_future = asyncio.get_running_loop().create_future()
             controller._pending_sequence = 0x7695
             controller._pending_command = 3
+            self._prepare_telemetry_tracking(controller)
 
             controller._notification_handler(0, LIVE_TELEMETRY_ON)
             self.assertFalse(controller._notify_future.done())
@@ -217,6 +275,7 @@ class ProtocolTests(unittest.TestCase):
         controller._notify_future = None
         controller._pending_sequence = None
         controller._pending_command = None
+        self._prepare_telemetry_tracking(controller)
 
         controller._notification_handler(0, LIVE_TELEMETRY_OFF)
         self.assertEqual(controller.state.work_type, 2)
@@ -266,6 +325,9 @@ class ProtocolTests(unittest.TestCase):
             controller._client = object()
             controller._read_char = object()
             controller._write_char = object()
+            controller._connection_started_monotonic = 100.0
+            controller._last_telemetry_monotonic = 50.0
+            controller._telemetry_event = asyncio.Event()
 
             controller.abandon()
 

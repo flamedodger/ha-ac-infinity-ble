@@ -39,6 +39,7 @@ class AdaptiveController:
         self.sensors_healthy = False
         self.daytime = False
         self.last_climate_update: datetime | None = None
+        self._last_telemetry_generation = -1
         self.last_command: datetime | None = None
         self.last_started: datetime | None = None
         self._listeners: list[Callable[[], None]] = []
@@ -81,12 +82,19 @@ class AdaptiveController:
             and 0 < temperature < 60
             and 0 <= humidity <= 100
         )
-        if readings_valid:
+        telemetry_generation = self.device.telemetry_generation
+        if (
+            readings_valid
+            and telemetry_generation != self._last_telemetry_generation
+        ):
             self.last_climate_update = now
+            self._last_telemetry_generation = telemetry_generation
 
         stale_after = timedelta(minutes=float(self.options["sensor_stale_minutes"]))
         self.sensors_healthy = bool(
-            self.last_climate_update and now - self.last_climate_update <= stale_after
+            readings_valid
+            and self.last_climate_update
+            and now - self.last_climate_update <= stale_after
         )
         self.daytime = is_daytime(
             now.time(),

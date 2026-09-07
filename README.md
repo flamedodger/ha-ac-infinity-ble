@@ -1,7 +1,7 @@
 # AC Infinity Bluetooth for Home Assistant
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://hacs.xyz)
-[![Validate](https://github.com/viss/ha-ac-infinity-ble/actions/workflows/validate.yml/badge.svg)](https://github.com/viss/ha-ac-infinity-ble/actions/workflows/validate.yml)
+[![Validate](https://github.com/flamedodger/ha-ac-infinity-ble/actions/workflows/validate.yml/badge.svg)](https://github.com/flamedodger/ha-ac-infinity-ble/actions/workflows/validate.yml)
 
 === /!\ warning /!\ ===
 
@@ -23,8 +23,8 @@ integration and vendors a repaired copy of
 Home Assistant installs the tested protocol code instead of the old
 `ac-infinity-ble==0.4.3` package.
 
-The implementation has been live-protocol tested with a Bluetooth Controller
-69 (type 7, protocol version 3) controlling a fan on port 1.
+The implementation has been live-protocol tested with Bluetooth Controller 67
+and Controller 69-family hardware.
 
 ## What is fixed
 
@@ -62,10 +62,10 @@ The implementation has been live-protocol tested with a Bluetooth Controller
 
 ### HACS custom repository (recommended)
 
-[![Open in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=viss&repository=ha-ac-infinity-ble&category=integration)
+[![Open in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=flamedodger&repository=ha-ac-infinity-ble&category=integration)
 
 1. Open **HACS → ⋮ → Custom repositories**.
-2. Add `https://github.com/viss/ha-ac-infinity-ble` as an **Integration**.
+2. Add `https://github.com/flamedodger/ha-ac-infinity-ble` as an **Integration**.
 3. Find **AC Infinity**, choose **Download**, and restart Home Assistant.
 4. Open **Settings → Devices & services → Add integration → AC Infinity**.
 
@@ -83,15 +83,20 @@ The implementation has been live-protocol tested with a Bluetooth Controller
 Home Assistant 2025.2 or newer is required. A local Bluetooth adapter or an
 ESPHome Bluetooth proxy with active connections enabled must be in range.
 
-The integration intentionally holds the BLE connection for responsive
-automations and live telemetry. Reload or disable the integration before using
-the phone app.
+The integration briefly opens a BLE connection for commands and model reads,
+then releases it so Controller 67 climate advertisements can resume. Close the
+phone app before using Home Assistant because the controller supports one
+active Bluetooth client.
 
 ## Adaptive speed control (development preview)
 
 Version 2.1 adds an opt-in adaptive controller and a bundled Lovelace card.
 Adaptive control is **off by default** after installation or upgrade. Existing
 fan and sensor entities continue to use the same BLE command path.
+
+### Adaptive control entities
+
+![AC Infinity adaptive control entities](docs/images/controls-device-mobile.png)
 
 The integration creates native Home Assistant entities for:
 
@@ -182,7 +187,7 @@ that Home Assistant's Bluetooth integration can see connectable devices.
 ## Current scope
 
 - The repaired build targets local BLE, not the AC Infinity cloud API.
-- Controller 69 port 1 is the live-tested path.
+- Controller 67 and Controller 69 port 1 are the live-tested paths.
 - Multiple independently controlled ports on one Controller 69 need a future
   multi-entity design; the old integration also exposed only one fan.
 - The included tests validate captured Controller 69 frames and state races,
