@@ -1,7 +1,7 @@
 # AC Infinity Bluetooth for Home Assistant
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://hacs.xyz)
-[![Validate](https://github.com/flamedodger/ha-ac-infinity-ble/actions/workflows/validate.yml/badge.svg)](https://github.com/flamedodger/ha-ac-infinity-ble/actions/workflows/validate.yml)
+[![Validate](https://github.com/viss/ha-ac-infinity-ble/actions/workflows/validate.yml/badge.svg)](https://github.com/viss/ha-ac-infinity-ble/actions/workflows/validate.yml)
 
 === /!\ warning /!\ ===
 
@@ -62,10 +62,10 @@ and Controller 69-family hardware.
 
 ### HACS custom repository (recommended)
 
-[![Open in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=flamedodger&repository=ha-ac-infinity-ble&category=integration)
+[![Open in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=viss&repository=ha-ac-infinity-ble&category=integration)
 
 1. Open **HACS → ⋮ → Custom repositories**.
-2. Add `https://github.com/flamedodger/ha-ac-infinity-ble` as an **Integration**.
+2. Add `https://github.com/viss/ha-ac-infinity-ble` as an **Integration**.
 3. Find **AC Infinity**, choose **Download**, and restart Home Assistant.
 4. Open **Settings → Devices & services → Add integration → AC Infinity**.
 
