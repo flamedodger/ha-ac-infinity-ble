@@ -1,6 +1,7 @@
 """Constants for the ac_infinity integration."""
 
 DOMAIN = "ac_infinity"
+CONF_PORT = "port"
 
 DEVICE_TIMEOUT = 30
 UPDATE_SECONDS = 15

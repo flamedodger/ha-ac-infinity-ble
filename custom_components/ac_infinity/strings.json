@@ -1,4 +1,14 @@
 {
+  "options": {
+    "step": {
+      "init": {
+        "title": "Physical fan port",
+        "description": "Choose the numbered socket where the fan is plugged in. This integration controls one port per controller; the default is port 1. Changing it keeps the existing fan entity and reloads the connection.",
+        "data": {"port": "Physical port"}
+      }
+    },
+    "error": {"invalid_port": "Select a physical port supported by this controller."}
+  },
   "config": {
     "step": {
       "user": {

@@ -26,7 +26,12 @@ from .const import (
 )
 from .exceptions import CharacteristicMissingError
 from .models import DeviceInfo
-from .protocol import Protocol, parse_manufacturer_data
+from .protocol import (
+    MULTI_PORT_TYPES,
+    Protocol,
+    parse_manufacturer_data,
+    physical_port_count,
+)
 from .util import get_bit, get_bits, get_short
 
 BLEAK_BACKOFF_TIME = 0.25
@@ -45,6 +50,7 @@ class ACInfinityController:
         ble_device: BLEDevice,
         state: DeviceInfo | None = None,
         advertisement_data: AdvertisementData | None = None,
+        port: int = 1,
     ) -> None:
         """Init the ACInfinityController."""
         if not state and not advertisement_data:
@@ -62,6 +68,11 @@ class ACInfinityController:
                 raise ValueError("Advertisement is not from an AC Infinity controller")
             state = parse_manufacturer_data(manufacturer_data)
         self._state = state
+        if not 1 <= port <= physical_port_count(state.type):
+            raise ValueError("Invalid physical controller port")
+        # Multi-port selector 0 is controller-wide state, not physical port 1.
+        self._port = port if state.type in MULTI_PORT_TYPES else 0
+        self._state.fan = None
         self._connect_lock: asyncio.Lock = asyncio.Lock()
         self._read_char: BleakGATTCharacteristic | None = None
         self._write_char: BleakGATTCharacteristic | None = None
@@ -75,7 +86,6 @@ class ACInfinityController:
         self._pending_sequence: int | None = None
         self._pending_command: int | None = None
         self._sequence = 1
-        self._desired_work_type: int | None = None
         self._stopped = False
 
     def set_ble_device_and_advertisement_data(
@@ -88,6 +98,10 @@ class ACInfinityController:
         if manufacturer_data is None:
             raise ValueError("Advertisement is not from an AC Infinity controller")
         info = parse_manufacturer_data(manufacturer_data)
+        # Advertisement output follows the controller's screen selection, not
+        # necessarily the port this entity controls. Only telemetry owns output.
+        info.fan = None
+        info.fan_state = None
         self._state = replace(
             self._state, **{k: v for k, v in asdict(info).items() if v is not None}
         )
@@ -115,7 +129,16 @@ class ACInfinityController:
     @property
     def is_on(self) -> bool:
         """Get whether the device is on."""
-        return bool(self._state.work_type == 2 and self._state.fan)
+        return bool(self._state.fan)
+
+    @property
+    def port(self) -> int:
+        """Physical port exposed by this entity (single-port controllers: 1)."""
+        return self._port or 1
+
+    @property
+    def _response_port(self) -> int | None:
+        return self._port if self._state.type in MULTI_PORT_TYPES else None
 
     @property
     def speed(self) -> int:
@@ -162,90 +185,56 @@ class ACInfinityController:
         await self._ensure_connected()
         _LOGGER.debug("%s: Updating", self.name)
         sequence = self.sequence
-        command = self._protocol.get_model_data(self._state.type, 0, sequence)
+        command = self._protocol.get_model_data(self._state.type, self._port, sequence)
         if data := await self._send_command(command):
-            values = self._protocol.parse_model_response(data, sequence)
+            values = self._protocol.parse_model_response(
+                data, sequence, self._response_port
+            )
             self._state.work_type = values[0x10][0]
             self._state.level_off = values[0x11][0] & 0x0F
             self._state.level_on = values[0x12][0] & 0x0F
-            self._state.fan = (
-                self._state.level_on if self._state.work_type == 2 else 0
-            )
-            self._desired_work_type = None
+            # ON/OFF levels are presets, not measurements of current output.
             self._fire_callbacks(CallbackType.UPDATE_RESPONSE)
 
     async def turn_on(self, speed: int | None = None) -> None:
-        """Turn on the controller."""
-        await self._ensure_connected()
-        _LOGGER.debug("%s: Turn on", self.name)
-        previous_state = replace(self._state)
-        self._desired_work_type = 2
-        self._state.work_type = 2
+        """Resume the saved ON speed unless a speed was explicitly requested."""
         if speed is not None:
-            self._state.fan = speed
-            self._state.level_on = speed
+            await self.set_speed(speed)
         else:
-            self._state.fan = self._state.level_on or 10
-            self._state.level_on = self._state.fan
-
-        sequence = self.sequence
-        command = self._protocol.set_level(
-            self._state.type, 2, self._state.level_on, 0, sequence
-        )
-        try:
-            response = await self._send_command(command)
-            self._protocol.parse_set_response(response, sequence)
-        except Exception:
-            self._state = previous_state
-            self._desired_work_type = None
-            raise
-        self._fire_callbacks(CallbackType.UPDATE_RESPONSE)
+            await self._set_mode(2)
 
     async def turn_off(self) -> None:
-        """Turn off the controller."""
+        """Select OFF without rewriting either saved speed preset."""
+        await self._set_mode(1)
+
+    async def _set_mode(self, work_type: int) -> None:
+        """Change only mode; physical telemetry confirms the resulting output."""
         await self._ensure_connected()
-        _LOGGER.debug("%s: Turn off", self.name)
-        previous_state = replace(self._state)
-        self._desired_work_type = 1
-        self._state.work_type = 1
-        self._state.fan = 0
         sequence = self.sequence
-        command = self._protocol.set_mode(self._state.type, 1, 0, sequence)
-        try:
-            response = await self._send_command(command)
-            self._protocol.parse_set_response(response, sequence)
-        except Exception:
-            self._state = previous_state
-            self._desired_work_type = None
-            raise
+        command = self._protocol.set_mode(
+            self._state.type, work_type, self._port, sequence
+        )
+        response = await self._send_command(command)
+        self._protocol.parse_set_response(response, sequence, self._response_port)
         self._fire_callbacks(CallbackType.UPDATE_RESPONSE)
 
     async def set_speed(self, speed: int) -> None:
         """Set the speed of the controller."""
         if speed not in range(0, 11):
             raise ValueError("Speed must be between 0 and 10")
+        if speed == 0:
+            await self.turn_off()
+            return
         await self._ensure_connected()
         _LOGGER.debug("%s: Set speed to %s", self.name, speed)
-        previous_state = replace(self._state)
-        self._desired_work_type = 2 if speed > 0 else 1
-        self._state.work_type = self._desired_work_type
-        self.state.fan = speed
-        if self._state.work_type == 1:
-            sequence = self.sequence
-            command = self._protocol.set_mode(self._state.type, 1, 0, sequence)
-        else:
-            self._state.level_on = speed
-            sequence = self.sequence
-            command = self._protocol.set_level(
-                self._state.type, self._state.work_type, speed, 0, sequence
-            )
-        try:
-            response = await self._send_command(command)
-            self._protocol.parse_set_response(response, sequence)
-        except Exception:
-            self._state = previous_state
-            self._desired_work_type = None
-            raise
+        sequence = self.sequence
+        command = self._protocol.set_level(
+            self._state.type, 2, speed, self._port, sequence
+        )
+        response = await self._send_command(command)
+        self._protocol.parse_set_response(response, sequence, self._response_port)
+        self._state.level_on = speed
+        # ACK confirms a setting, not motor output. Notifications update fan.
         self._fire_callbacks(CallbackType.UPDATE_RESPONSE)
 
     async def stop(self) -> None:
@@ -376,16 +365,13 @@ class ACInfinityController:
             self._state.tmp = get_short(data, 8) / 100
             self._state.hum = get_short(data, 10) / 100
             self._state.vpd = get_short(data, 12) / 100
-            self._state.fan_type = get_short(data, 14)
-            self._state.fan_state = get_bits(data[16], 0, 2)
-            reported_work_type = get_bits(data[17], 4, 4)
-            if (
-                self._desired_work_type is None
-                or reported_work_type == self._desired_work_type
-            ):
-                self._state.work_type = reported_work_type
-                if reported_work_type == self._desired_work_type:
-                    self._desired_work_type = None
+            offset = 18 + (self._port - 1) * 4 if self._port else 14
+            if len(data) >= offset + 4:
+                self._state.fan_type = get_short(data, offset)
+                self._state.fan_state = get_bits(data[offset + 2], 0, 2)
+                self._state.work_type = get_bits(data[offset + 3], 4, 4)
+                level = get_bits(data[offset + 3], 0, 4)
+                self._state.fan = level if data[offset] != 0xFF and level <= 10 else 0
             self._fire_callbacks(CallbackType.NOTIFICATION)
             return
 
@@ -563,9 +549,7 @@ class ACInfinityController:
         self._pending_command = command[9]
         try:
             async with asyncio.timeout(GATT_TIMEOUT):
-                await self._client.write_gatt_char(
-                    self._write_char, command, False
-                )
+                await self._client.write_gatt_char(self._write_char, command, False)
             async with asyncio.timeout(5):
                 return await self._notify_future
         finally:

@@ -2,6 +2,14 @@ from .models import DeviceInfo
 from .util import crc16, get_bit, get_bits, get_short
 
 
+MULTI_PORT_TYPES = (7, 9, 11, 12)
+
+
+def physical_port_count(controller_type: int) -> int:
+    """Return the number of directly connected ports (not expansion hubs)."""
+    return 4 if controller_type in MULTI_PORT_TYPES else 1
+
+
 def get_type(type: int) -> str:
     if type == 2:
         return "B"
@@ -124,32 +132,54 @@ class Protocol:
         return packet[10:-2]
 
     def parse_model_response(
-        self, data: bytes | bytearray, expected_sequence: int | None = None
+        self,
+        data: bytes | bytearray,
+        expected_sequence: int | None = None,
+        expected_port: int | None = None,
     ) -> dict[int, bytes]:
         """Parse parameter TLVs from a validated model response."""
         payload = self.parse_response(data, expected_sequence, 1)
         values: dict[int, bytes] = {}
         offset = 0
-        while offset + 2 <= len(payload):
+        while offset < len(payload):
+            if offset + 2 > len(payload):
+                raise ValueError("truncated model response parameter")
             parameter = payload[offset]
             length = payload[offset + 1]
+            # FF is a two-byte port selector trailer, not a parameter TLV.
+            if parameter == 0xFF:
+                if offset + 2 != len(payload):
+                    raise ValueError("malformed model port trailer")
+                values[parameter] = bytes((length,))
+                break
             end = offset + 2 + length
             if end > len(payload):
                 raise ValueError("truncated model response parameter")
             values[parameter] = payload[offset + 2 : end]
             offset = end
-            if parameter == 0xFF:
-                break
+        if expected_port is not None and values.get(0xFF) != bytes((expected_port,)):
+            raise ValueError("model response port does not match request")
         if any(not values.get(parameter) for parameter in (0x10, 0x11, 0x12)):
             raise ValueError("model response is missing mode or level parameters")
         return values
 
     def parse_set_response(
-        self, data: bytes | bytearray, expected_sequence: int
+        self,
+        data: bytes | bytearray,
+        expected_sequence: int,
+        expected_port: int | None = None,
     ) -> None:
         """Validate that every parameter in a SET acknowledgement succeeded."""
         payload = self.parse_response(data, expected_sequence, 3)
         if not payload or len(payload) % 2:
+            raise ValueError("malformed AC Infinity SET acknowledgement")
+        if payload[-2] == 0xFF:
+            if expected_port is not None and payload[-1] != expected_port:
+                raise ValueError("SET response port does not match request")
+            payload = payload[:-2]
+        elif expected_port is not None:
+            raise ValueError("SET response is missing port selector")
+        if not payload or 0xFF in payload[::2]:
             raise ValueError("malformed AC Infinity SET acknowledgement")
         failures = [
             (payload[index], payload[index + 1])

@@ -15,10 +15,12 @@ from homeassistant.components.bluetooth import (
     async_process_advertisements,
 )
 from homeassistant.const import CONF_ADDRESS, CONF_SERVICE_DATA
+from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 
-from .const import DOMAIN
+from .const import CONF_PORT, DOMAIN
 from .discovery import NAME_ONLY_CONTROLLER_69, device_from_service_info
+from .vendor.ac_infinity_ble.protocol import physical_port_count
 
 
 DISCOVERY_TIMEOUT = 12
@@ -28,6 +30,14 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Discover and validate AC Infinity Bluetooth controllers."""
 
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> ACInfinityOptionsFlow:
+        """Allow changing the physical port without recreating entities."""
+        return ACInfinityOptionsFlow()
 
     def __init__(self) -> None:
         """Initialize the config flow."""
@@ -96,7 +106,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except TimeoutError:
                 return self.async_abort(reason="no_devices_found")
             self._discovered_devices[discovery.address] = discovery
-
         if not self._discovered_devices:
             return self.async_abort(reason="no_devices_found")
 
@@ -130,3 +139,34 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             ):
                 continue
             self._discovered_devices[discovery.address] = discovery
+
+
+class ACInfinityOptionsFlow(config_entries.OptionsFlow):
+    """Choose the physical output controlled by the existing fan entity."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        controller_type = self.config_entry.data[CONF_SERVICE_DATA]["type"]
+        ports = {
+            port: str(port)
+            for port in range(1, physical_port_count(controller_type) + 1)
+        }
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_PORT, default=self.config_entry.options.get(CONF_PORT, 1)
+                ): vol.In(ports)
+            }
+        )
+        errors = {}
+        if user_input is not None:
+            try:
+                validated = schema(user_input)
+            except vol.Invalid:
+                errors["base"] = "invalid_port"
+            else:
+                return self.async_create_entry(
+                    title="", data={**self.config_entry.options, **validated}
+                )
+        return self.async_show_form(step_id="init", data_schema=schema, errors=errors)

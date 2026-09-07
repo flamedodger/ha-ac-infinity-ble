@@ -12,7 +12,7 @@ from homeassistant.const import CONF_ADDRESS, CONF_SERVICE_DATA, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 
-from .const import DOMAIN
+from .const import CONF_PORT, DOMAIN
 from .coordinator import ACInfinityDataUpdateCoordinator
 from .models import ACInfinityData
 from .vendor.ac_infinity_ble import ACInfinityController, DeviceInfo
@@ -45,7 +45,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
 
     device_info = DeviceInfo(**entry.data[CONF_SERVICE_DATA])
-    controller = ACInfinityController(ble_device, state=device_info)
+    controller = ACInfinityController(
+        ble_device, state=device_info, port=entry.options.get(CONF_PORT, 1)
+    )
     coordinator = ACInfinityDataUpdateCoordinator(
         hass, _LOGGER, entry, controller
     )
@@ -65,7 +67,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.title, controller, coordinator
     )
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    entry.async_on_unload(entry.add_update_listener(async_options_updated))
     return True
+
+
+async def async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Release the old BLE session and reload with the newly selected port."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

@@ -45,7 +45,7 @@ LIVE_TELEMETRY_OFF = bytearray.fromhex(
 LIVE_TELEMETRY_ON = bytearray.fromhex(
     "1eff0209031c0000095e1a4d005c0000001213910012ffff0001ffff0001ffff0001"
 )
-LIVE_ACK = bytes.fromhex("a5130006769585f2000310001200ff000608")
+LIVE_ACK = bytes.fromhex("a5130006769585f2000310001200ff011629")
 LIVE_MODEL_RESPONSE = bytes.fromhex(
     "a51300301a6663cc0001100101110105120105130700c25a200064001404"
     "0000000015040000000016080000000000000000170400000000ff00c513"
@@ -130,6 +130,7 @@ class ProtocolTests(unittest.TestCase):
             controller = object.__new__(ble.ACInfinityController)
             controller._state = ble.DeviceInfo(type=7, name="E-test", version=3)
             controller._protocol = Protocol()
+            controller._port = 1
             controller._callbacks = []
             controller._desired_work_type = None
             controller._notify_future = asyncio.get_running_loop().create_future()
@@ -143,12 +144,13 @@ class ProtocolTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
-    def test_stale_mode_telemetry_does_not_undo_optimistic_state(self) -> None:
+    def test_physical_port_telemetry_overrides_global_state(self) -> None:
         controller = object.__new__(ble.ACInfinityController)
         controller._state = ble.DeviceInfo(
             type=7, name="E-test", version=3, work_type=2, fan=5
         )
         controller._protocol = Protocol()
+        controller._port = 1
         controller._callbacks = []
         controller._desired_work_type = 2
         controller._notify_future = None
@@ -157,7 +159,9 @@ class ProtocolTests(unittest.TestCase):
 
         controller._notification_handler(0, LIVE_TELEMETRY_OFF)
         self.assertEqual(controller.state.work_type, 2)
-        self.assertEqual(controller.state.fan, 5)
+        # The physical port reports ON at zero; global and requested state
+        # must not fabricate output for the fan.
+        self.assertEqual(controller.state.fan, 0)
 
     def test_control_keeps_connection_open(self) -> None:
         async def exercise() -> None:
@@ -166,6 +170,7 @@ class ProtocolTests(unittest.TestCase):
                 type=7, name="E-test", version=3, level_on=5
             )
             controller._protocol = Protocol()
+            controller._port = 1
             controller._callbacks = []
             controller._desired_work_type = None
             controller._sequence = 0x7694
@@ -174,8 +179,11 @@ class ProtocolTests(unittest.TestCase):
             controller._execute_disconnect = AsyncMock()
 
             await controller.turn_on(5)
+            self.assertFalse(controller.is_on)
+            self.assertEqual(controller.state.level_on, 5)
+            controller._notification_handler(0, LIVE_TELEMETRY_ON)
             self.assertTrue(controller.is_on)
-            self.assertEqual(controller.speed, 5)
+            self.assertEqual(controller.speed, 1)
             controller._execute_disconnect.assert_not_awaited()
 
         asyncio.run(exercise())
@@ -297,6 +305,7 @@ class ProtocolTests(unittest.TestCase):
             controller._callbacks = []
             controller._desired_work_type = None
             controller._sequence = 100
+            controller._port = 1
             controller._ensure_connected = AsyncMock()
             controller._send_command = AsyncMock(side_effect=TimeoutError)
 

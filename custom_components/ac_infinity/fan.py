@@ -56,6 +56,7 @@ class ACInfinityFan(CoordinatorEntity[ACInfinityDataUpdateCoordinator], FanEntit
         """Initialize the fan."""
         super().__init__(coordinator)
         self._device = device
+        self._attr_extra_state_attributes = {"physical_port": device.port}
         self._attr_unique_id = f"{device.address}_fan"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, device.address)},
