@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .adaptive_control import AdaptiveController
 from .coordinator import ACInfinityDataUpdateCoordinator
 from .vendor.ac_infinity_ble import ACInfinityController
 
@@ -14,3 +15,4 @@ class ACInfinityData:
     title: str
     device: ACInfinityController
     coordinator: ACInfinityDataUpdateCoordinator
+    adaptive: AdaptiveController
