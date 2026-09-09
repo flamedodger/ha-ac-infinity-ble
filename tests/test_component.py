@@ -312,6 +312,33 @@ class ProtocolTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
+    def test_single_port_control_updates_acknowledged_output(self) -> None:
+        async def exercise() -> None:
+            controller = object.__new__(ble.ACInfinityController)
+            controller._state = ble.DeviceInfo(
+                type=1,
+                name="A-test",
+                version=0,
+                work_type=1,
+                fan=0,
+                level_on=5,
+            )
+            controller._protocol = Protocol()
+            controller._port = 0
+            controller._callbacks = []
+            controller._sequence = 0x7694
+            controller._ensure_connected = AsyncMock()
+            controller._send_command = AsyncMock(return_value=LIVE_ACK)
+
+            await controller.set_speed(3)
+
+            self.assertTrue(controller.is_on)
+            self.assertEqual(controller.speed, 3)
+            self.assertEqual(controller.state.work_type, 2)
+            self.assertEqual(controller.state.level_on, 3)
+
+        asyncio.run(exercise())
+
     def test_callback_unregister_is_idempotent(self) -> None:
         controller = object.__new__(ble.ACInfinityController)
         controller._callbacks = []

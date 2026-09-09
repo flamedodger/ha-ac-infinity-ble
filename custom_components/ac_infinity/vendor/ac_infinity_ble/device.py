@@ -94,7 +94,8 @@ class ACInfinityController:
             raise ValueError("Invalid physical controller port")
         # Multi-port selector 0 is controller-wide state, not physical port 1.
         self._port = port if state.type in MULTI_PORT_TYPES else 0
-        self._state.fan = None
+        if state.type in MULTI_PORT_TYPES:
+            self._state.fan = None
         self._connect_lock: asyncio.Lock = asyncio.Lock()
         self._read_char: BleakGATTCharacteristic | None = None
         self._write_char: BleakGATTCharacteristic | None = None
@@ -119,10 +120,12 @@ class ACInfinityController:
         if manufacturer_data is None:
             raise ValueError("Advertisement is not from an AC Infinity controller")
         info = parse_manufacturer_data(manufacturer_data)
-        # Advertisement output follows the controller's screen selection, not
-        # necessarily the port this entity controls. Only telemetry owns output.
-        info.fan = None
-        info.fan_state = None
+        # Multi-port advertisements follow the controller's screen selection,
+        # not necessarily the port this entity controls. Controller 67 is a
+        # single-port device, so its advertised output is authoritative.
+        if info.type in MULTI_PORT_TYPES:
+            info.fan = None
+            info.fan_state = None
         self._state = replace(
             self._state, **{k: v for k, v in asdict(info).items() if v is not None}
         )
@@ -251,7 +254,11 @@ class ACInfinityController:
             self._state.work_type = values[0x10][0]
             self._state.level_off = values[0x11][0] & 0x0F
             self._state.level_on = values[0x12][0] & 0x0F
-            # ON/OFF levels are presets, not measurements of current output.
+            if self._state.type not in MULTI_PORT_TYPES:
+                self._state.fan = (
+                    self._state.level_on if self._state.work_type == 2 else 0
+                )
+            # Multi-port ON/OFF levels are presets, not physical-port output.
             self._fire_callbacks(CallbackType.UPDATE_RESPONSE)
 
     async def turn_on(self, speed: int | None = None) -> None:
@@ -274,6 +281,9 @@ class ACInfinityController:
         )
         response = await self._send_command(command)
         self._protocol.parse_set_response(response, sequence, self._response_port)
+        if self._state.type not in MULTI_PORT_TYPES:
+            self._state.work_type = work_type
+            self._state.fan = self._state.level_on if work_type == 2 else 0
         self._fire_callbacks(CallbackType.UPDATE_RESPONSE)
 
     async def set_speed(self, speed: int) -> None:
@@ -292,7 +302,12 @@ class ACInfinityController:
         response = await self._send_command(command)
         self._protocol.parse_set_response(response, sequence, self._response_port)
         self._state.level_on = speed
-        # ACK confirms a setting, not motor output. Notifications update fan.
+        if self._state.type not in MULTI_PORT_TYPES:
+            # Controller 67 exposes only one output, so its successful ACK is
+            # sufficient to update the entity while advertisements catch up.
+            self._state.work_type = 2
+            self._state.fan = speed
+        # Multi-port notifications remain authoritative for physical output.
         self._fire_callbacks(CallbackType.UPDATE_RESPONSE)
 
     async def stop(self) -> None:
