@@ -1,0 +1,5 @@
+# Replace the fan entity with the fan created by this integration.
+# The card discovers the adaptive controls attached to the same HA device.
+type: custom:ac-infinity-adaptive-card
+fan_entity: fan.your_controller_fan
+name: AC Infinity Adaptive Speed Control

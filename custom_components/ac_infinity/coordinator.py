@@ -19,6 +19,8 @@ from .vendor.ac_infinity_ble import ACInfinityController, CallbackType, DeviceIn
 
 _LOGGER = logging.getLogger(__name__)
 SHUTDOWN_TIMEOUT = 15
+TELEMETRY_RECONNECT_SECONDS = 120
+TELEMETRY_WAIT_SECONDS = 10
 
 
 class ACInfinityDataUpdateCoordinator(DataUpdateCoordinator[DeviceInfo]):
@@ -43,6 +45,35 @@ class ACInfinityDataUpdateCoordinator(DataUpdateCoordinator[DeviceInfo]):
         self._remove_controller_callback = controller.register_callback(
             self._handle_controller_update
         )
+        self._remove_bluetooth_callback = bluetooth.async_register_callback(
+            hass,
+            self._handle_bluetooth_advertisement,
+            {
+                "address": controller.address,
+                "manufacturer_id": 2306,
+                "connectable": True,
+            },
+            bluetooth.BluetoothScanningMode.ACTIVE,
+        )
+        self._shutdown_lock = asyncio.Lock()
+        self._shutdown_complete = False
+
+    @callback
+    def _handle_bluetooth_advertisement(
+        self,
+        service_info: bluetooth.BluetoothServiceInfoBleak,
+        _change: bluetooth.BluetoothChange,
+    ) -> None:
+        """Update controller state from a Home Assistant BLE advertisement."""
+        try:
+            self.controller.set_ble_device_and_advertisement_data(
+                service_info.device, service_info
+            )
+        except (UnicodeDecodeError, ValueError):
+            _LOGGER.debug(
+                "Ignoring malformed AC Infinity advertisement from %s",
+                service_info.address,
+            )
 
     @callback
     def _handle_controller_update(
@@ -66,26 +97,55 @@ class ACInfinityDataUpdateCoordinator(DataUpdateCoordinator[DeviceInfo]):
             self.controller.set_ble_device(ble_device)
         try:
             await self.controller.update()
+            if self.controller.telemetry_is_stale(TELEMETRY_RECONNECT_SECONDS):
+                _LOGGER.warning(
+                    "AC Infinity climate telemetry is stale; reconnecting %s",
+                    self.controller.name,
+                )
+                self.controller.invalidate_climate()
+                await self.controller.wait_for_advertisement_telemetry(
+                    TELEMETRY_WAIT_SECONDS
+                )
         except (BleakError, TimeoutError, EOFError) as exc:
             raise UpdateFailed(f"Bluetooth update failed: {exc}") from exc
         return self.controller.state
 
     async def async_shutdown(self) -> None:
         """Remove callbacks and release the controller for other BLE clients."""
-        try:
-            self._remove_controller_callback()
-        finally:
-            # A callback cleanup failure must never strand the GATT connection
-            # or prevent DataUpdateCoordinator teardown during reload.
+        async with self._shutdown_lock:
+            if self._shutdown_complete:
+                return
+
             try:
-                try:
-                    async with asyncio.timeout(SHUTDOWN_TIMEOUT):
-                        await self.controller.stop()
-                except TimeoutError:
-                    _LOGGER.warning(
-                        "Timed out releasing AC Infinity BLE session; "
-                        "abandoning poisoned client so reload can continue"
-                    )
-                    self.controller.abandon()
+                # Home Assistant can ask a coordinator to shut down more than once
+                # while a failed setup or reload is unwinding. Clear each remover
+                # before calling it so callback cleanup is safely repeatable.
+                remove_bluetooth = self._remove_bluetooth_callback
+                self._remove_bluetooth_callback = None
+                if remove_bluetooth is not None:
+                    try:
+                        remove_bluetooth()
+                    except ValueError:
+                        _LOGGER.debug("Bluetooth callback was already removed")
             finally:
-                await super().async_shutdown()
+                try:
+                    remove_controller = self._remove_controller_callback
+                    self._remove_controller_callback = None
+                    if remove_controller is not None:
+                        remove_controller()
+                finally:
+                    # A callback cleanup failure must never strand the GATT
+                    # connection or prevent coordinator teardown during reload.
+                    try:
+                        try:
+                            async with asyncio.timeout(SHUTDOWN_TIMEOUT):
+                                await self.controller.stop()
+                        except TimeoutError:
+                            _LOGGER.warning(
+                                "Timed out releasing AC Infinity BLE session; "
+                                "abandoning poisoned client so reload can continue"
+                            )
+                            self.controller.abandon()
+                    finally:
+                        await super().async_shutdown()
+                        self._shutdown_complete = True

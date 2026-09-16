@@ -38,7 +38,11 @@ BLEAK_BACKOFF_TIME = 0.25
 CONNECT_TIMEOUT = 30
 GATT_TIMEOUT = 10
 DISCONNECT_TIMEOUT = 5
-DISCONNECT_DELAY = 120
+# Controller 67 publishes climate readings in BLE advertisements and stops
+# advertising while a GATT session is held open. Keep the session shorter than
+# Home Assistant's 15-second model poll so advertisements can resume between
+# reads instead of being starved indefinitely.
+DISCONNECT_DELAY = 5
 DEFAULT_ATTEMPTS = 3
 
 _LOGGER = logging.getLogger(__name__)
@@ -59,6 +63,11 @@ class ACInfinityController:
         self._ble_device = ble_device
         self._advertisement_data = advertisement_data
         self._operation_lock = asyncio.Lock()
+        self.loop = asyncio.get_running_loop()
+        self._telemetry_event = asyncio.Event()
+        self._telemetry_generation = 0
+        self._last_telemetry_monotonic: float | None = None
+        self._connection_started_monotonic: float | None = None
         if state is None:
             assert advertisement_data is not None
             manufacturer_data = advertisement_data.manufacturer_data.get(
@@ -67,12 +76,26 @@ class ACInfinityController:
             if manufacturer_data is None:
                 raise ValueError("Advertisement is not from an AC Infinity controller")
             state = parse_manufacturer_data(manufacturer_data)
+            self._record_telemetry()
+        else:
+            # Config-entry service data is a discovery-time snapshot. Never
+            # expose those saved climate values as live after a reload.
+            state = replace(
+                state,
+                tmp=None,
+                hum=None,
+                vpd=None,
+                tmp_state=None,
+                hum_state=None,
+                vpd_state=None,
+            )
         self._state = state
         if not 1 <= port <= physical_port_count(state.type):
             raise ValueError("Invalid physical controller port")
         # Multi-port selector 0 is controller-wide state, not physical port 1.
         self._port = port if state.type in MULTI_PORT_TYPES else 0
-        self._state.fan = None
+        if state.type in MULTI_PORT_TYPES:
+            self._state.fan = None
         self._connect_lock: asyncio.Lock = asyncio.Lock()
         self._read_char: BleakGATTCharacteristic | None = None
         self._write_char: BleakGATTCharacteristic | None = None
@@ -80,7 +103,6 @@ class ACInfinityController:
         self._client: BleakClientWithServiceCache | None = None
         self._protocol: Protocol = Protocol()
         self._expected_disconnect = False
-        self.loop = asyncio.get_running_loop()
         self._callbacks: list[Callable[[DeviceInfo, CallbackType], None]] = []
         self._notify_future: asyncio.Future[bytearray] | None = None
         self._pending_sequence: int | None = None
@@ -98,13 +120,16 @@ class ACInfinityController:
         if manufacturer_data is None:
             raise ValueError("Advertisement is not from an AC Infinity controller")
         info = parse_manufacturer_data(manufacturer_data)
-        # Advertisement output follows the controller's screen selection, not
-        # necessarily the port this entity controls. Only telemetry owns output.
-        info.fan = None
-        info.fan_state = None
+        # Multi-port advertisements follow the controller's screen selection,
+        # not necessarily the port this entity controls. Controller 67 is a
+        # single-port device, so its advertised output is authoritative.
+        if info.type in MULTI_PORT_TYPES:
+            info.fan = None
+            info.fan_state = None
         self._state = replace(
             self._state, **{k: v for k, v in asdict(info).items() if v is not None}
         )
+        self._record_telemetry()
         self._fire_callbacks(CallbackType.ADVERTISEMENT)
 
     def set_ble_device(self, ble_device: BLEDevice) -> None:
@@ -146,19 +171,55 @@ class ACInfinityController:
         return self._state.fan or 0
 
     @property
-    def temperature(self) -> float:
+    def temperature(self) -> float | None:
         """Get the temperature of the device."""
-        return self._state.tmp or 0
+        return self._state.tmp
 
     @property
-    def humidity(self) -> float:
+    def humidity(self) -> float | None:
         """Get the humidity of the device."""
-        return self._state.hum or 0
+        return self._state.hum
 
     @property
-    def vpd(self) -> float:
+    def vpd(self) -> float | None:
         """Get the vpd of the device."""
-        return self._state.vpd or 0
+        return self._state.vpd
+
+    @property
+    def telemetry_generation(self) -> int:
+        """Return a counter advanced only by genuine climate telemetry."""
+        return self._telemetry_generation
+
+    def telemetry_is_stale(self, max_age: float) -> bool:
+        """Return whether a connected session has stopped reporting climate."""
+        reference = self._last_telemetry_monotonic
+        if reference is None:
+            reference = self._connection_started_monotonic
+        return bool(reference is not None and self.loop.time() - reference >= max_age)
+
+    def invalidate_climate(self) -> None:
+        """Remove stale climate values so consumers enter their safety state."""
+        self._state.tmp = None
+        self._state.hum = None
+        self._state.vpd = None
+        self._state.tmp_state = None
+        self._state.hum_state = None
+        self._state.vpd_state = None
+        self._fire_callbacks(CallbackType.TELEMETRY_STALE)
+
+    def _record_telemetry(self) -> None:
+        """Record a real advertisement or notification climate update."""
+        self._last_telemetry_monotonic = self.loop.time()
+        self._telemetry_generation += 1
+        self._telemetry_event.set()
+
+    async def wait_for_advertisement_telemetry(self, timeout: float) -> None:
+        """Release GATT and require a genuine climate advertisement."""
+        async with self._operation_lock:
+            self._telemetry_event.clear()
+            await self._execute_disconnect()
+            async with asyncio.timeout(timeout):
+                await self._telemetry_event.wait()
 
     @property
     def rssi(self) -> int | None:
@@ -193,7 +254,11 @@ class ACInfinityController:
             self._state.work_type = values[0x10][0]
             self._state.level_off = values[0x11][0] & 0x0F
             self._state.level_on = values[0x12][0] & 0x0F
-            # ON/OFF levels are presets, not measurements of current output.
+            if self._state.type not in MULTI_PORT_TYPES:
+                self._state.fan = (
+                    self._state.level_on if self._state.work_type == 2 else 0
+                )
+            # Multi-port ON/OFF levels are presets, not physical-port output.
             self._fire_callbacks(CallbackType.UPDATE_RESPONSE)
 
     async def turn_on(self, speed: int | None = None) -> None:
@@ -216,6 +281,9 @@ class ACInfinityController:
         )
         response = await self._send_command(command)
         self._protocol.parse_set_response(response, sequence, self._response_port)
+        if self._state.type not in MULTI_PORT_TYPES:
+            self._state.work_type = work_type
+            self._state.fan = self._state.level_on if work_type == 2 else 0
         self._fire_callbacks(CallbackType.UPDATE_RESPONSE)
 
     async def set_speed(self, speed: int) -> None:
@@ -234,7 +302,12 @@ class ACInfinityController:
         response = await self._send_command(command)
         self._protocol.parse_set_response(response, sequence, self._response_port)
         self._state.level_on = speed
-        # ACK confirms a setting, not motor output. Notifications update fan.
+        if self._state.type not in MULTI_PORT_TYPES:
+            # Controller 67 exposes only one output, so its successful ACK is
+            # sufficient to update the entity while advertisements catch up.
+            self._state.work_type = 2
+            self._state.fan = speed
+        # Multi-port notifications remain authoritative for physical output.
         self._fire_callbacks(CallbackType.UPDATE_RESPONSE)
 
     async def stop(self) -> None:
@@ -261,6 +334,9 @@ class ACInfinityController:
         self._client = None
         self._read_char = None
         self._write_char = None
+        self._connection_started_monotonic = None
+        self._last_telemetry_monotonic = None
+        self._telemetry_event.clear()
 
     def _fire_callbacks(self, type: CallbackType) -> None:
         """Fire the callbacks."""
@@ -331,6 +407,9 @@ class ACInfinityController:
                 )
 
             self._client = client
+            self._connection_started_monotonic = self.loop.time()
+            self._last_telemetry_monotonic = None
+            self._telemetry_event.clear()
             self._reset_disconnect_timer()
 
             _LOGGER.debug(
@@ -372,6 +451,7 @@ class ACInfinityController:
                 self._state.work_type = get_bits(data[offset + 3], 4, 4)
                 level = get_bits(data[offset + 3], 0, 4)
                 self._state.fan = level if data[offset] != 0xFF and level <= 10 else 0
+            self._record_telemetry()
             self._fire_callbacks(CallbackType.NOTIFICATION)
             return
 
@@ -410,6 +490,9 @@ class ACInfinityController:
             self._client = None
             self._read_char = None
             self._write_char = None
+            self._connection_started_monotonic = None
+            self._last_telemetry_monotonic = None
+            self._telemetry_event.clear()
 
     def _disconnect(self) -> None:
         """Disconnect from device."""
@@ -434,6 +517,9 @@ class ACInfinityController:
             self._client = None
             self._read_char = None
             self._write_char = None
+            self._connection_started_monotonic = None
+            self._last_telemetry_monotonic = None
+            self._telemetry_event.clear()
             if client and client.is_connected:
                 await self._safe_disconnect_client(client, read_char)
 

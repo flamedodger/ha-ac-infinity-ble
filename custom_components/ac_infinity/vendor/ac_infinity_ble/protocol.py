@@ -115,7 +115,12 @@ class Protocol:
     ) -> bytes:
         """Validate a response frame and return its payload."""
         packet = bytes(data)
-        if len(packet) < 12 or packet[0:2] != bytes((0xA5, 0x13)):
+        # Controllers use either 0x10 or 0x13 for response frames. Controller
+        # 67 has been observed returning 0x10 for model reads, while other
+        # models and firmware return 0x13. The remaining framing, CRC,
+        # sequence, and command checks are identical and prevent telemetry or
+        # an unrelated command response from satisfying the pending request.
+        if len(packet) < 12 or packet[0] != 0xA5 or packet[1] not in (0x10, 0x13):
             raise ValueError("not an AC Infinity response frame")
         payload_length = int.from_bytes(packet[2:4], "big")
         if len(packet) != payload_length + 12:
