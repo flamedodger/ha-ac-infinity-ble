@@ -634,8 +634,15 @@ class ACInfinityController:
         self._pending_command = command[9]
         try:
             async with asyncio.timeout(GATT_TIMEOUT):
+                # Controller 69 PRO advertises its command characteristic as
+                # "write" only and silently drops write-without-response, so
+                # keep the unacknowledged write for characteristics that
+                # support it and use an acknowledged write otherwise.
+                properties = getattr(self._write_char, "properties", ())
                 await self._client.write_gatt_char(
-                    self._write_char, command, False
+                    self._write_char,
+                    command,
+                    "write-without-response" not in properties,
                 )
             async with asyncio.timeout(5):
                 return await self._notify_future

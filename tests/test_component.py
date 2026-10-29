@@ -52,6 +52,11 @@ CONTROLLER_67_MODEL_RESPONSE = bytes.fromhex(
     "a510002e000215e6000110010311010112010a13070f521c48163e2d1404"
     "0000070815040000070816080000070800000708170409000f003665"
 )
+# Model read answered by a Controller 69 PRO (type 11, version 7); sequence 12.
+CONTROLLER_69_PRO_MODEL_RESPONSE = bytes.fromhex(
+    "a5170033000c92ce0001100102110100120101130a10c25a2000640020"
+    "0000140400000000150400000000160800000000000000001704ffffffffff00e0af"
+)
 
 
 class AdaptiveControlTests(unittest.TestCase):
@@ -232,6 +237,49 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(values[0x10], b"\x03")
         self.assertEqual(values[0x11], b"\x01")
         self.assertEqual(values[0x12], b"\x0a")
+
+    def test_controller_69_pro_response_header_is_accepted(self) -> None:
+        # Captured from a Controller 69 PRO (advertisement type 11, version 7).
+        values = Protocol().parse_model_response(CONTROLLER_69_PRO_MODEL_RESPONSE, 12)
+        self.assertEqual(values[0x10], b"\x02")
+        self.assertEqual(values[0x11], b"\x00")
+        self.assertEqual(values[0x12], b"\x01")
+
+    def test_write_only_characteristic_uses_acknowledged_write(self) -> None:
+        self._assert_write_mode(types.SimpleNamespace(properties=["write"]), True)
+
+    def test_write_without_response_characteristic_keeps_unacknowledged_write(
+        self,
+    ) -> None:
+        self._assert_write_mode(
+            types.SimpleNamespace(properties=["write", "write-without-response"]),
+            False,
+        )
+
+    def _assert_write_mode(self, write_char, expect_response: bool) -> None:
+        async def exercise() -> None:
+            controller = object.__new__(ble.ACInfinityController)
+            controller._client = types.SimpleNamespace(
+                write_gatt_char=AsyncMock()
+            )
+            controller._read_char = "read-char"
+            controller._write_char = write_char
+            controller._pending_sequence = None
+            controller._pending_command = None
+            controller._notify_future = None
+            controller.loop = asyncio.get_running_loop()
+            command = bytes.fromhex("a5130001000000000003")
+            controller._client.write_gatt_char.side_effect = (
+                lambda *_args: controller._notify_future.set_result(b"ok")
+            )
+
+            await controller._execute_command_locked(command)
+
+            controller._client.write_gatt_char.assert_awaited_once_with(
+                write_char, command, expect_response
+            )
+
+        asyncio.run(exercise())
 
     def test_set_acknowledgement_is_validated(self) -> None:
         Protocol().parse_set_response(LIVE_ACK, 0x7695)
